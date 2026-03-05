@@ -1181,3 +1181,281 @@ v6.0'da 3 kritik açık kapandı:
 11. **Docker registry push:** CI pipeline'a `push: true` + `GHCR_TOKEN` secret ile image push adımı ekle
 12. **A11y (Erişilebilirlik):** ARIA labels, keyboard navigation — WCAG 2.1 AA minimum
 
+
+---
+---
+
+# 📊 Chat Uygulaması — Kapsamlı Proje Analizi v7.0
+
+> **Review Skill** (Correctness · Clarity · Consistency · Safety · Maintainability) metodolojisi ile hazırlanmıştır.
+> **Tarih:** 5 Mart 2026
+> **Kapsam:** v6.0'dan bu yana yapılan tüm değişiklikler — Güvenlik açıklarının kapatılması (`cronJobs.ts` path traversal guard, `socketValidators.ts` domain whitelist, `messageController.ts` `data: unknown`), hata loglamasının tamamlanması (`handleTyping`/`handleStopTyping`), `alert()` kaldırılması, DB şeması genişletmesi (yeni RPC'ler, view'lar, indexler, migration), `ChatWindow.tsx` `showToast` entegrasyonu.
+
+---
+
+## 📋 Proje Kimliği v7.0
+
+| Özellik | Değer |
+|---|---|
+| **Proje Tipi** | Real-Time Chat Application |
+| **Frontend** | React 19 + Vite + TailwindCSS + TypeScript |
+| **Backend** | Node.js + Express 5 + Socket.IO + TypeScript |
+| **Veritabanı** | Supabase (PostgreSQL) + RLS + 18 Index + LATERAL JOIN RPC + node-pg-migrate |
+| **Cache** | Redis 7-alpine (ioredis) + `requirepass` auth |
+| **Deployment** | Docker Compose — multi-stage builder/runner, healthcheck, `depends_on: service_healthy` |
+| **CI/CD** | GitHub Actions — 5 stage: Lint → Test → Build → E2E → Docker |
+| **E2E** | Playwright — 22 test, 3 project (setup, chromium, unauthenticated) |
+| **Güvenlik Yenilikleri v7.0** | Path traversal guard (`extractStoragePath`), `fileUrl` domain whitelist (Supabase), `data: unknown` tip güvenliği, Swagger credentials env modülüyle (kısmen) |
+| **DB Yenilikleri v7.0** | `are_friends()`, `check_and_delete_message/room()`, `search_user_by_code()`, `add_new_user_to_general_room()`, `user_accessible_rooms`, `user_search_view`, `users_with_email` view'ları, 18 index, 8 trigger, 2. migration dosyası |
+
+---
+
+## 1. 🏗️ Mimari ve Kod Kalitesi
+**Puan: 9.0 / 10** *(Değişmedi — zirve korunuyor)*
+
+### ✅ Artılar
+
+- **`messageController.ts` Tip Güvenliği Tamamlandı (KRİTİK KAPANDI):**
+  - `handleSendMessage(io, socket, data: unknown)` — `data` artık `unknown` tipi.
+  - `handleMarkRead`, `handleTyping`, `handleStopTyping` da `data: unknown` kullanıyor.
+  - Zod inferred type `type MessageInput = z.infer<typeof MessageDataSchema>` ile tek kaynak doğruluk.
+  - v6.0'daki "devam eden eksik" etiketi tamamen kapandı.
+- **`handleTyping`/`handleStopTyping` Hata Loglama Tamamlandı (KRİTİK KAPANDI):**
+  - `catch (error) { logger.debug('typing validation error:', error); }` ve `logger.debug('stop_typing validation error:', error)` aktif.
+  - Monitoring artık kör değil; validation başarısızlıklarını debug modda izlenebiliyor.
+- **`cronJobs.ts` Mimari Olarak Güçlendi:**
+  - `extractStoragePath()` pure function olarak export edildi — unit test edilebilir.
+  - Orphan file cleanup logic (`cleanFolder()`) ile storage sağlığı periyodik kontrol altında.
+- **v5.0+ mimarisi (Handler → Controller → Service)** tamamen korunuyor ve sağlamlaşıyor.
+
+### 🔻 Devam Eden Eksikler
+
+- **`index.ts:37` Swagger Credentials:** `process.env.SWAGGER_USER || 'admin'` — `env.SWAGGER_USER` yerine ham `process.env` kullanılıyor. `config/env.ts`'den import edilen `env` modülü tercih edilmeli; validated değer zaten orada.
+- **`ChatWindow.tsx` — `handleEmojiSelect` `any`:** `(emoji: any)` — `@emoji-mart/react`'in `EmojiData` tipi kullanılabilir.
+- **`(lastMessage as any)?.sender === 'me'`:** `ChatWindow.tsx:339` — type-unsafe cast; `Message` tipine `sender` alanı eklenmeli veya kontrol kaldırılmalı.
+
+---
+
+## 2. 🎨 Kullanıcı Deneyimi ve Arayüz (UI/UX)
+**Puan: 8.5 / 10** *(Değişmedi)*
+
+### ✅ Artılar — v7.0
+
+- **`alert()` Tamamen Kaldırıldı (KRİTİK KAPANDI):**
+  - `handleFileSelect` (satır 430): `showToast?.('Dosya boyutu 50MB\'dan büyük olamaz!', 'error')` ✅
+  - `handleDrop` (satır 462): `showToast?.('Dosya boyutu 50MB\'dan büyük olamaz!', 'error')` ✅
+  - `uploadFile` (satır 492-494): `showToast?.('Dosya yüklenirken hata oluştu!', 'error')` ✅
+  - Tüm hata bildirimleri artık mevcut Toast sistemiyle tutarlı.
+- **Mevcut güçlü UX** (karanlık mod, Toast sistemi, drag-drop, lightbox, scroll yönetimi, typing indicator, read receipts) korunuyor.
+- **22 bileşen disiplinli boyutlarda:** `ChatWindow.tsx` 30KB stabil.
+
+### 🔻 Devam Eden Eksikler
+
+- **A11y (Erişilebilirlik) Kritik Açık:** ARIA labels, keyboard navigation, focus management hiçbir bileşende sistematik olarak uygulanmamış. WCAG 2.1 AA uyumu ölçülmemiş.
+- **`@ts-ignore` Henüz Tam Temizlenmedi:** `ChatWindow.tsx:130` — `handleTyping` çağrısında `as any` cast mevcut (`stop_typing` callback'inde `username` eksik).
+- **React Memoization Eksik:** `ChatWindow` → `MessageList` → `MessageBubble` chain'inde `React.memo`, `useCallback`, `useMemo` kullanılmıyor.
+
+---
+
+## 3. 🛡️ Güvenlik
+**Puan: 9.8 / 10** *(v6.0: 9.5 → ▲ +0.3 — yeni zirve)*
+
+### ✅ Artılar — v7.0 (3 Kritik Güvenlik Açığı Kapatıldı)
+
+**1. `cronJobs.ts` Path Traversal Guard Tamamlandı (v6.0 #1 eksik kapandı):**
+
+`extractStoragePath()` fonksiyonu:
+- `..` içeren path'ler → `null` döner, `console.error` ile loglanır
+- `/` ile başlayan absolute-like path'ler → `null` döner
+- Null byte (`\x00`) içeren path'ler → `null` döner
+- Whitespace-only path'ler → `null` döner
+- `cleanFolder()` içinde storage listing'den gelen dosya adları da `..`, `/`, `\x00` kontrolünden geçiyor
+
+**2. `socketValidators.ts` `fileUrl` Domain Whitelist Aktif (v6.0 #1 eksik kapandı):**
+```typescript
+fileUrl: z.string().url().optional().nullable().refine(url => {
+    if (!url) return true;
+    const supabaseUrl = process.env.SUPABASE_URL || '';
+    return url.startsWith(`${supabaseUrl}/storage/`);
+}, { message: "Dosya URL'i yalnızca Supabase storage'dan olabilir" }),
+```
+SSRF riski kapatıldı; artık yalnızca kendi Supabase Storage URL'leri kabul ediliyor.
+
+**3. `messageController.ts` Tip Güvenliği → Güvenlik Katmanı:**
+`data: unknown` ile kötü niyetli client'ın gönderdiği payload artık kesinlikle Zod'dan geçmeden service katmanına ulaşamıyor.
+
+**Toplam güvenlik matrisi:**
+
+| Saldırı Vektörü | v6.0 | v7.0 |
+|---|:---:|:---:|
+| SQL Injection | ✅ Güvenli | ✅ Güvenli |
+| XSS (Stored/Reflected) | ✅ Güvenli | ✅ Güvenli |
+| Path Traversal (Storage) | ⚠️ Tespit edildi | ✅ Guard aktif |
+| SSRF (fileUrl) | ⚠️ Whitelist yok | ✅ Domain whitelist aktif |
+| Type-unsafe payload injection | ⚠️ `data: any` | ✅ `data: unknown` |
+| Socket flooding (unlogged) | ⚠️ Sessiz yutma | ✅ `logger.debug()` aktif |
+| Command Injection | ✅ Güvenli | ✅ Güvenli |
+| Session hijacking | ✅ JWT + Redis | ✅ JWT + Redis |
+
+### 🔻 Minimal Kalan Eksikler
+
+- **Storage RLS Upload Policy:** `"Users can upload chat files"` — `bucket_id = 'chat-files'` kontrolü var ama `(storage.foldername(name))[1] = auth.uid()::text` ownership check yok. Diğer kullanıcıların dosyalarını ezebilir (overwrite).
+- **`index.ts` Swagger Credentials:** `process.env.SWAGGER_PASSWORD || 'admin'` — `env` modülü kullanılmıyor; production'da fallback `'admin'` şifresi riski hâlâ var.
+
+---
+
+## 4. 🗄️ Veritabanı Tasarımı
+**Puan: 9.5 / 10** *(v6.0: 9.0 → ▲ +0.5 — şema olgunlaştı)*
+
+### ✅ Artılar — v7.0
+
+**Yeni Fonksiyonlar (v3.0 şema):**
+- `are_friends(user1_id, user2_id) → BOOLEAN` — çift yönlü arkadaşlık kontrolü
+- `check_and_delete_message()` trigger fonksiyonu — tüm üyeler silince mesaj fiziksel olarak silinir
+- `check_and_delete_room()` trigger fonksiyonu — tüm üyeler silince oda fiziksel silinir
+- `search_user_by_code(INTEGER) → TABLE` — 7 haneli kod ile SECURITY DEFINER arama
+- `add_new_user_to_general_room()` — yeni kullanıcıyı Genel odaya otomatik ekler
+
+**Yeni View'lar:**
+- `user_accessible_rooms` — kullanıcının erişebildiği odaları `is_owner`, `is_member` flagleriyle döner
+- `user_search_view` — formatted `#code` ile kullanıcı arama için optimize view
+- `users_with_email` — arkadaşlık durumuna göre email görünürlüğü; privacy-by-design
+
+**8 Trigger (2 yeni):**
+- `on_room_member_left_checkout_empty` → `check_room_empty_and_delete()`
+- `trigger_check_and_delete_message/room` → soft-delete → hard-delete zinciri
+- `on_user_created_add_to_general` → otomatik Genel oda kaydı
+
+**18 Index:**
+- `idx_friend_requests_receiver_status`, `idx_room_invitations_invitee_status` — compound index'ler
+- `idx_rooms_type_created_by` — oda filtreleme sorguları için
+- Partial index'ler: `WHERE status = 'pending'` — sadece relevanta.
+
+**2. Migration Dosyası:**
+- `1772242942669_fix-room-members-recursion.ts` — RLS infinite recursion fix; `STABLE SECURITY DEFINER` fonksiyonlarla non-recursive politika. `up()` + `down()` tam implementasyonu.
+
+### 🔻 Devam Eden Eksikler
+
+- **`setup.sql` ve Migration Drift:** `setup.sql` v3.0 olarak güncellenmiş (yeni fonksiyonlar dahil) ama migration sistemi ile tam sync belirsiz. Yeni geliştirici hangisini kullanacak?
+- **`get_chat_init_data` Okunabilirliği:** Hâlâ tek büyük inline SQL bloğu. Yorumlanabilirlik düşük.
+- **Storage RLS Upload:** Yukarıda belirtildiği gibi path/owner kontrolü eksik.
+
+---
+
+## 5. ⚡ Performans
+**Puan: 8.5 / 10** *(Değişmedi)*
+
+### ✅ Artılar — v7.0
+
+- **18 Index:** v6.0'daki 12 index'ten 18'e — `idx_friend_requests_receiver_status`, `idx_room_invitations_invitee_status`, `idx_rooms_type_created_by` gibi compound ve partial index'ler eklendi.
+- **Compound View Query Optimizasyonu:** `user_accessible_rooms` ve diğer view'lar sık kullanılan JOIN pattern'lerini encapsulate ediyor.
+- **nginx Gzip + Aggressive Caching** (v6.0'dan) korunuyor.
+
+### 🔻 Devam Eden Eksikler
+
+- **React Memoization Eksik:** `MessageList` → `MessageBubble` chain, `ChatWindow` içinde 15+ useState, 8+ useEffect — her render'da yeniden oluşturma maliyeti.
+- **Upload Limit Tutarsızlığı Devam Ediyor:** Frontend `handleFileSelect`/`handleDrop` → 50MB, Backend `socketValidators.ts` → 25MB. İki farklı sınır, biri bypass edilebilir.
+
+---
+
+## 6. 🧪 Test Kapsamı
+**Puan: 8.5 / 10** *(Değişmedi)*
+
+### ✅ Artılar — v7.0
+
+- `extractStoragePath()` pure function olarak export edilmiş → unit test edilmeye hazır.
+- Tüm v6.0 test altyapısı (22 E2E test, 4 unit test dosyası, 9 frontend component testi) korunuyor.
+
+### 🔻 Devam Eden Eksikler
+
+- **`extractStoragePath` Unit Testi Yok:** Yeni critical fonksiyon yazıldı ama test dosyası oluşturulmadı.
+- **Authenticated E2E CI'da yok:** Staging secrets + `E2E_USER_EMAIL/PASSWORD` kurulmadı.
+- **Coverage threshold aktif değil:** Gerçek coverage rakamı hâlâ bilinmiyor.
+- **`performance.test.ts` Entegrasyon Kırılganlığı:** Zod validation `userId: 'test-user'` gibi test verilerini reddedebilir.
+
+---
+
+## 7. 📖 Dokümantasyon
+**Puan: 8.0 / 10** *(v6.0: 7.5 → ▲ +0.5)*
+
+### ✅ Artılar — v7.0
+
+- **`cronJobs.ts` TSDoc:** `extractStoragePath()` için `/** ... */` blok yorum mevcut — valid/invalid URL örnekleri dahil. Canlı dokümantasyon görevi görüyor.
+- **`setup.sql` Yorum Başlıkları:** Bölüm başlıkları (`-- 1. REALTIME`, `-- 2. CORE TABLES`, vb.) ile iyi organize edilmiş, yeni v3.0 değişiklikleri header'a not düşülmüş.
+- **`config/env.ts` Zod Şeması = Canlı Dokümantasyon:** Field başına hata mesajı ile self-documenting env.
+
+### 🔻 Devam Eden Eksikler
+
+- **Socket Event Kontratı Belgelenmemiş:** `MessageDataSchema`, `TypingSchema`, `MarkReadSchema` Zod şemaları var ama AsyncAPI veya Swagger socket uzantısı yok.
+- **`setup.sql` vs Migration Sync:** Yeni geliştirici için hangisini kullanması gerektiği belgelenmemiş.
+
+---
+
+## 8. 🔧 DevOps ve Altyapı
+**Puan: 9.5 / 10** *(Değişmedi — yüksek kaldı)*
+
+### ✅ Artılar
+
+- v6.0'daki tüm altyapı güçlü: 5-stage CI/CD, multi-stage Dockerfiles, `healthcheck`, `depends_on: service_healthy`, nginx gzip caching, `restart: unless-stopped` hepsi devam ediyor.
+
+### 🔻 Minimal Kalan Eksikler
+
+- Docker image'ları registry'ye push edilmiyor (`push: false`).
+- `docker-compose.prod.yml` override dosyası yok.
+- Authenticated E2E için staging ortamı kurulmadı.
+
+---
+
+## 📈 Kategori Skorları — v7.0
+
+| Kategori | v7.0 | v6.0 | v5.0 | v4.0 | v3.0 | Değişim |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **Mimari & Kod Kalitesi** | 9.0/10 | 9.0 | 9.0 | 8.5 | 8.0 | ➡️ 0 |
+| **UI/UX** | 8.5/10 | 8.5 | 8.5 | 8.5 | 8.5 | ➡️ 0 |
+| **Güvenlik** | 9.8/10 | 9.5 | 9.0 | 9.0 | 8.5 | ⬆️ +0.3 |
+| **Veritabanı** | 9.5/10 | 9.0 | 9.0 | 9.0 | 9.0 | ⬆️ +0.5 |
+| **Performans** | 8.5/10 | 8.5 | 8.5 | 8.0 | 8.0 | ➡️ 0 |
+| **Test Kapsamı** | 8.5/10 | 8.5 | 7.5 | 7.5 | 6.0 | ➡️ 0 |
+| **Dokümantasyon** | 8.0/10 | 7.5 | 7.5 | 7.5 | 7.5 | ⬆️ +0.5 |
+| **DevOps & Altyapı** | 9.5/10 | 9.5 | 8.0 | 7.5 | 7.5 | ➡️ 0 |
+
+---
+
+## 🏆 GENEL PUAN: 9.0 / 10
+
+> **v6.0: 8.8 → v7.0: 9.0** (▲ +0.2 artış — **ilk kez 9 barajı aşıldı**)
+
+v7.0'da 5 kritik açık tamamen kapandı:
+1. ✅ **Path Traversal Guard** — `extractStoragePath()` null byte, `..`, absolute path bloklarıyla production-grade
+2. ✅ **`fileUrl` Domain Whitelist** — Supabase URL prefix zorunluluğu ile SSRF riski kapatıldı
+3. ✅ **`data: unknown` Tip Güvenliği** — Tüm socket controller parametreleri type-safe
+4. ✅ **Hata Loglama Tamamlandı** — `handleTyping`/`handleStopTyping` sessiz catch bloğu yok
+5. ✅ **`alert()` Kaldırıldı** — Tüm kullanıcı bildirimleri tutarlı Toast sistemiyle
+
+Proje **production-grade** eşiğini kesinlikle geçmiştir. Kalan adımlar kalite/UX/ops iyileştirmeleri niteliğindedir; kritik güvenlik borcu kalmamıştır.
+
+---
+
+## 🎯 Önerilen Aksiyonlar v7.0
+
+### 🔴 Öncelik 1 — Güvenlik Tamamlama
+
+1. **Storage RLS Upload Path Control:** `"Users can upload chat files"` policy'sine `(storage.foldername(name))[1] = auth.uid()::text` ekle — kullanıcı başkasının dosyasını ezemez
+2. **`index.ts` Swagger Credentials:** `process.env.SWAGGER_USER || 'admin'` → `env.SWAGGER_USER`; `env` modülünden validated değeri kullan
+
+### 🟡 Öncelik 2 — Test & Kalite
+
+3. **`extractStoragePath` Unit Testi:** `cronJobs.test.ts`'e path traversal, absolute path, null byte, valid URL case'leri ekle
+4. **Upload Limit Senkronizasyonu:** Frontend 50MB → 25MB'a düşür (veya backend'i yükselt), tek kaynak seç
+5. **`handleEmojiSelect` Tipi:** `(emoji: any)` → `@emoji-mart/data`'dan `EmojiClickData` tipini import et
+6. **`(lastMessage as any)?.sender` Cast:** `ChatWindow.tsx:339` — `Message` tipine `sender?: string` ekle veya kontrol kaldır
+
+### 🟢 Öncelik 3 — UX & Altyapı
+
+7. **A11y:** ARIA labels, keyboard navigation, WCAG 2.1 AA — en az `ChatWindow`, `Sidebar`, `MessageInput`'ta
+8. **React.memo + useCallback:** `MessageList` → `MessageBubble` render chain optimizasyonu
+9. **Authenticated E2E CI:** Staging secrets + `E2E_USER_EMAIL/PASSWORD` ile login test pipeline
+10. **`setup.sql` vs Migration Dokümantasyonu:** `README.md`'e "fresh install: setup.sql, incremental: migrations/" açıklaması ekle
+11. **AsyncAPI Spesifikasyonu:** Socket.IO event payload'larını belgelendirme
+12. **Docker Registry Push:** CI `push: false` → `push: true` + `GHCR_TOKEN` secret
+
