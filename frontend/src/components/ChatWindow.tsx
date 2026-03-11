@@ -231,33 +231,34 @@ export default function ChatWindow({
     }
   }, [])
 
+  // onBack fonksiyonunun referansı sürekli değiştiği için effect'i tetiklemesini önleyen Ref
+  const onBackRef = useRef(onBack);
+  useEffect(() => {
+    onBackRef.current = onBack;
+  }, [onBack]);
+
   // Android Geri Tuşu / Yandan Kaydırma Kontrolü
   useEffect(() => {
-    // Component unmount olduğunda history.back() yapmamızı belirleyen flag
-    let shouldBackOnUnmount = true;
+    if (!selectedRoom?.id) return;
 
     // Kullanıcı donanımsal geri tuşuna (veya yandan swipe) bastığında çalışır
     const handlePopState = () => {
-      // popstate tetiklendiği için kendi onBack'imizi çağırıyoruz
-      shouldBackOnUnmount = false;
-      onBack();
+      onBackRef.current();
     };
 
-    // Mevcut state'e dummy bir obje push ederek history yığınına bir eleman ekliyoruz.
-    // Bu sayede kullanıcı geri basarsa tarayıcıdan çıkmak yerine bir önceki state'e (boş state) döner
-    // ve bizim handlePopState tetiklenir.
-    window.history.pushState({ chat: 'open', roomId: selectedRoom?.id }, '');
+    // Mevcut state'e objemizi push ederek history yığınına bir eleman ekliyoruz.
+    window.history.pushState({ isChatOpen: true, roomId: selectedRoom.id }, '');
     window.addEventListener('popstate', handlePopState);
 
     return () => {
       window.removeEventListener('popstate', handlePopState);
-      // Eğer kullanıcı sol üstteki Geri ikonuna basarak unmount etmişse (popstate tetiklenmeden),
-      // history'de bıraktığımız fazlalık state'i manuel temizlemeliyiz.
-      if (shouldBackOnUnmount) {
+      // Eğer kullanıcı sol üstteki Geri ikonuna basarak unmount etmişse (veya masaüstünde başka odaya geçmişse),
+      // history'de bıraktığımız fazlalık state'i manuel temizlemeliyiz. (Sadece kendi state'imizse)
+      if (window.history.state && window.history.state.isChatOpen && window.history.state.roomId === selectedRoom.id) {
         window.history.back();
       }
     };
-  }, [onBack, selectedRoom?.id]);
+  }, [selectedRoom?.id]);
 
   // Long press timer cleanup
   useEffect(() => {
