@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import Redis from 'ioredis';
 import { env } from '../../config/env';
 
@@ -46,6 +46,7 @@ return val
 
 describe('rateLimitMsg Lua script', () => {
     let redis: Redis;
+    let rateLimitKey: string;
 
     beforeAll(() => new Promise<void>((resolve, reject) => {
         redis = createTestRedisClient();
@@ -56,33 +57,33 @@ describe('rateLimitMsg Lua script', () => {
 
     afterAll(() => { if (redis) redis.disconnect(); });
 
+    afterEach(() => redis.del(rateLimitKey));
+
     it('returns 1 on first call (allowed)', async () => {
-        const key = `test:ratelimit:${Date.now()}`;
-        const result = await (redis as any).rateLimitMsg(key, 500);
+        rateLimitKey = `test:ratelimit:${Date.now()}`;
+        const result = await (redis as any).rateLimitMsg(rateLimitKey, 500);
         expect(result).toBe(1);
-        await redis.del(key);
     });
 
     it('returns 0 on second call within window (rate limited)', async () => {
-        const key = `test:ratelimit:${Date.now()}`;
-        await (redis as any).rateLimitMsg(key, 500);
-        const result = await (redis as any).rateLimitMsg(key, 500);
+        rateLimitKey = `test:ratelimit:${Date.now()}`;
+        await (redis as any).rateLimitMsg(rateLimitKey, 500);
+        const result = await (redis as any).rateLimitMsg(rateLimitKey, 500);
         expect(result).toBe(0);
-        await redis.del(key);
     });
 
     it('returns 1 after TTL expires', async () => {
-        const key = `test:ratelimit:${Date.now()}`;
-        await (redis as any).rateLimitMsg(key, 100);
+        rateLimitKey = `test:ratelimit:${Date.now()}`;
+        await (redis as any).rateLimitMsg(rateLimitKey, 100);
         await new Promise(r => setTimeout(r, 150));
-        const result = await (redis as any).rateLimitMsg(key, 100);
+        const result = await (redis as any).rateLimitMsg(rateLimitKey, 100);
         expect(result).toBe(1);
-        await redis.del(key);
     });
 });
 
 describe('decrementConnections Lua script', () => {
     let redis: Redis;
+    let connKey: string;
 
     beforeAll(() => new Promise<void>((resolve, reject) => {
         redis = createTestRedisClient();
@@ -93,29 +94,30 @@ describe('decrementConnections Lua script', () => {
 
     afterAll(() => { if (redis) redis.disconnect(); });
 
+    afterEach(() => redis.del(connKey));
+
     it('returns remaining count after DECR', async () => {
-        const key = `test:conn:${Date.now()}`;
-        await redis.set(key, 3);
-        const result = await (redis as any).decrementConnections(key);
+        connKey = `test:conn:${Date.now()}`;
+        await redis.set(connKey, 3);
+        const result = await (redis as any).decrementConnections(connKey);
         expect(result).toBe(2);
-        await redis.del(key);
     });
 
     it('returns 0 and DELs key when count goes to 0', async () => {
-        const key = `test:conn:${Date.now()}`;
-        await redis.set(key, 1);
-        const result = await (redis as any).decrementConnections(key);
+        connKey = `test:conn:${Date.now()}`;
+        await redis.set(connKey, 1);
+        const result = await (redis as any).decrementConnections(connKey);
         expect(result).toBe(0);
-        const exists = await redis.exists(key);
+        const exists = await redis.exists(connKey);
         expect(exists).toBe(0);
     });
 
     it('returns 0 and DELs key if DECR goes negative', async () => {
-        const key = `test:conn:${Date.now()}`;
-        await redis.set(key, 0);
-        const result = await (redis as any).decrementConnections(key);
+        connKey = `test:conn:${Date.now()}`;
+        await redis.set(connKey, 0);
+        const result = await (redis as any).decrementConnections(connKey);
         expect(result).toBe(0);
-        const exists = await redis.exists(key);
+        const exists = await redis.exists(connKey);
         expect(exists).toBe(0);
     });
 });
